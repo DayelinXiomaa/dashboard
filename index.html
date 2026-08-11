@@ -246,6 +246,7 @@ footer.hint{text-align:center; color:var(--text-muted); font-size:11px; margin-t
         <div class="brand">🏠 DARE OS</div>
         <h1 id="greeting">Buenos días</h1>
         <div class="date-sub" id="dateSub"></div>
+        <div id="cloudStatus" style="font-size:11px; color:var(--text-muted); margin-top:2px;"></div>
       </div>
       <div class="quickadd">
         <span>⚡</span>
@@ -499,9 +500,90 @@ footer.hint{text-align:center; color:var(--text-muted); font-size:11px; margin-t
   </main>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
 <script>
 const DB_KEY='dareOS_data_v2';
 const NOMBRE='Dayelin';
+
+/* ---------- Sincronización en la nube (Firebase) ---------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyADWiBV62dt8FkgV0x9UbVEase8-M9pG50",
+  authDomain: "dare-os.firebaseapp.com",
+  projectId: "dare-os",
+  storageBucket: "dare-os.firebasestorage.app",
+  messagingSenderId: "971555256300",
+  appId: "1:971555256300:web:5df3abb6ced0d2f5fdb2c9"
+};
+const SYNC_CODE = 'dayelin-dareos-x7f2q9'; // tu código privado — debe ser IGUAL en todos tus dispositivos
+let cloudReady=false, applyingRemote=false, cloudSyncTimer=null, cloudDocRef=null;
+
+function setCloudStatus(text){
+  const el=document.getElementById('cloudStatus');
+  if(el) el.textContent=text;
+}
+function initCloud(){
+  try{
+    firebase.initializeApp(firebaseConfig);
+    cloudDocRef = firebase.firestore().collection('dareOS').doc(SYNC_CODE);
+    cloudReady = true;
+    setCloudStatus('☁ Conectando…');
+    pullFromCloud();
+    listenCloud();
+  }catch(e){
+    console.error('Firebase init error', e);
+    setCloudStatus('☁ Sin conexión a la nube');
+  }
+}
+async function pullFromCloud(){
+  if(!cloudReady) return;
+  try{
+    const snap = await cloudDocRef.get();
+    if(snap.exists){
+      const remote = snap.data();
+      if(remote.lastUpdated && remote.lastUpdated > (data.lastUpdated||0)){
+        applyingRemote=true;
+        data = remote.payload;
+        localStorage.setItem(DB_KEY, JSON.stringify(data));
+        render();
+        applyingRemote=false;
+      }
+      setCloudStatus('☁ Sincronizado');
+    } else {
+      scheduleCloudSync(true);
+    }
+  }catch(e){
+    console.error('Cloud pull error', e);
+    setCloudStatus('☁ Sin conexión a la nube');
+  }
+}
+function listenCloud(){
+  if(!cloudReady) return;
+  cloudDocRef.onSnapshot(snap=>{
+    if(!snap.exists || snap.metadata.hasPendingWrites) return;
+    const remote = snap.data();
+    if(remote.lastUpdated && remote.lastUpdated > (data.lastUpdated||0)){
+      applyingRemote=true;
+      data = remote.payload;
+      localStorage.setItem(DB_KEY, JSON.stringify(data));
+      render();
+      applyingRemote=false;
+      setCloudStatus('☁ Actualizado');
+    }
+  }, err=>{ console.error('Cloud listen error', err); setCloudStatus('☁ Sin conexión a la nube'); });
+}
+function scheduleCloudSync(immediate){
+  if(!cloudReady || applyingRemote) return;
+  clearTimeout(cloudSyncTimer);
+  const push=()=>{
+    data.lastUpdated = Date.now();
+    localStorage.setItem(DB_KEY, JSON.stringify(data));
+    cloudDocRef.set({payload:data, lastUpdated:data.lastUpdated})
+      .then(()=>setCloudStatus('☁ Sincronizado'))
+      .catch(e=>{ console.error(e); setCloudStatus('☁ Sin conexión a la nube'); });
+  };
+  if(immediate) push(); else cloudSyncTimer=setTimeout(push, 1200);
+}
 function todayStr(){return new Date().toISOString().slice(0,10);}
 function uid(){return Math.random().toString(36).slice(2,9);}
 
@@ -515,11 +597,12 @@ function loadData(){
   return {objetivo:{date:'',text:''}, tareas:[], agenda:[], clientes:[], proyectos:[], redes:[], aprendizaje:[],
     objetivoSemana:'', objetivosSemana:{}, metasSemana:[], metricas:{}, seededWeek1:false};
 }
-function saveData(){localStorage.setItem(DB_KEY, JSON.stringify(data)); render();}
+function saveData(){localStorage.setItem(DB_KEY, JSON.stringify(data)); render(); scheduleCloudSync();}
 let data=loadData();
 if(!data.objetivosSemana) data.objetivosSemana={};
 if(!data.metasSemana) data.metasSemana=[];
 if(!data.metricas) data.metricas={};
+if(!data.lastUpdated) data.lastUpdated=0;
 
 /* ---------- Siembra Semana 1 (5-9 agosto) ---------- */
 function seedWeek1(){
@@ -1351,6 +1434,7 @@ function render(){
 }
 render();
 setInterval(renderHeader, 30000);
+initCloud();
 </script>
 </body>
 </html>
