@@ -219,11 +219,39 @@ li.row .meta{font-size:10px; color:var(--text-muted); display:flex; gap:5px; ali
 .btn-ghost:hover{background:var(--accent);}
 
 footer.hint{text-align:center; color:var(--text-muted); font-size:11px; margin-top:16px;}
+
+/* ---------------- AUTH ---------------- */
+.auth-overlay{position:fixed; inset:0; background:linear-gradient(135deg,var(--primary),var(--primary-dark)); display:flex; align-items:center; justify-content:center; z-index:1000; padding:20px;}
+.auth-card{background:#fff; border-radius:24px; padding:36px 32px; width:100%; max-width:340px; box-shadow:0 20px 60px rgba(0,0,0,0.25); text-align:center;}
+.auth-logo{font-size:36px; margin-bottom:8px;}
+.auth-card h2{font-family:'Sora',sans-serif; margin:0 0 4px; color:var(--primary-dark); font-size:20px;}
+.auth-sub{font-size:12px; color:var(--text-muted); margin:0 0 20px; line-height:1.4;}
+.auth-card input{width:100%; padding:12px 14px; border-radius:12px; border:1px solid var(--border); margin-bottom:10px; font-family:'Inter',sans-serif; font-size:13px; outline:none; box-sizing:border-box; background:var(--bg);}
+.auth-card input:focus{border-color:var(--primary);}
+.auth-error{color:var(--danger); font-size:12px; min-height:16px; margin-bottom:6px;}
+.auth-btn{width:100%; padding:12px; border-radius:12px; border:none; font-family:'Sora',sans-serif; font-weight:700; font-size:13px; cursor:pointer; margin-bottom:8px;}
+.auth-btn.primary{background:var(--primary); color:#fff;}
+.auth-btn.primary:hover{background:var(--primary-dark);}
+.auth-btn.ghost{background:var(--surface-soft); color:var(--primary-dark);}
+.auth-btn.ghost:hover{background:var(--accent);}
 </style>
 </head>
 <body>
 
-<div class="app">
+<div id="authOverlay" class="auth-overlay">
+  <div class="auth-card">
+    <div class="auth-logo">🏠</div>
+    <h2>DARE OS</h2>
+    <p class="auth-sub">Inicia sesión para ver tus datos en todos tus dispositivos</p>
+    <input id="authEmail" type="email" placeholder="Correo electrónico" autocomplete="email">
+    <input id="authPassword" type="password" placeholder="Contraseña" autocomplete="current-password" onkeydown="if(event.key==='Enter') authLogin();">
+    <div id="authError" class="auth-error"></div>
+    <button class="auth-btn primary" onclick="authLogin()">Iniciar sesión</button>
+    <button class="auth-btn ghost" onclick="authRegister()">Crear cuenta</button>
+  </div>
+</div>
+
+<div class="app" id="appRoot" style="display:none;">
   <aside class="sidebar">
     <div class="logo">🏠</div>
     <div class="nav-icon active" data-page="dashboard" onclick="goPage('dashboard', this)">🏠<span class="tooltip">Dashboard</span></div>
@@ -237,7 +265,9 @@ footer.hint{text-align:center; color:var(--text-muted); font-size:11px; margin-t
     <div class="nav-icon" data-page="estadisticas" onclick="goPage('estadisticas', this)">📈<span class="tooltip">Estadísticas</span></div>
     <div class="spacer"></div>
     <div class="bottom-icon" onclick="exportData()" title="Exportar respaldo">⬇</div>
+    <div class="bottom-icon" onclick="authLogout()" title="Cerrar sesión">🚪</div>
   </aside>
+
 
   <main class="main">
 
@@ -502,6 +532,7 @@ footer.hint{text-align:center; color:var(--text-muted); font-size:11px; margin-t
 
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script>
 const DB_KEY='dareOS_data_v2';
 const NOMBRE='Dayelin';
@@ -515,17 +546,16 @@ const firebaseConfig = {
   messagingSenderId: "971555256300",
   appId: "1:971555256300:web:5df3abb6ced0d2f5fdb2c9"
 };
-const SYNC_CODE = 'dayelin-dareos-x7f2q9'; // tu código privado — debe ser IGUAL en todos tus dispositivos
+const SYNC_CODE = null; // ya no se usa: ahora el documento se identifica con tu usuario autenticado
 let cloudReady=false, applyingRemote=false, cloudSyncTimer=null, cloudDocRef=null;
 
 function setCloudStatus(text){
   const el=document.getElementById('cloudStatus');
   if(el) el.textContent=text;
 }
-function initCloud(){
+function startCloudForUser(uid){
   try{
-    firebase.initializeApp(firebaseConfig);
-    cloudDocRef = firebase.firestore().collection('dareOS').doc(SYNC_CODE);
+    cloudDocRef = firebase.firestore().collection('dareOS').doc(uid);
     cloudReady = true;
     setCloudStatus('☁ Conectando…');
     pullFromCloud();
@@ -584,6 +614,39 @@ function scheduleCloudSync(immediate){
   };
   if(immediate) push(); else cloudSyncTimer=setTimeout(push, 1200);
 }
+
+/* ---------- Autenticación ---------- */
+function traducirErrorAuth(e){
+  const map={
+    'auth/invalid-email':'Correo inválido.',
+    'auth/user-not-found':'No existe una cuenta con ese correo.',
+    'auth/wrong-password':'Contraseña incorrecta.',
+    'auth/email-already-in-use':'Ya existe una cuenta con ese correo. Inicia sesión.',
+    'auth/weak-password':'La contraseña debe tener al menos 6 caracteres.',
+    'auth/invalid-credential':'Correo o contraseña incorrectos.',
+    'auth/missing-password':'Escribe tu contraseña.'
+  };
+  return map[e.code] || ('Ocurrió un error: ' + e.message);
+}
+function authLogin(){
+  const email=document.getElementById('authEmail').value.trim();
+  const pass=document.getElementById('authPassword').value;
+  const err=document.getElementById('authError'); err.textContent='';
+  if(!email || !pass){ err.textContent='Escribe tu correo y contraseña.'; return; }
+  firebase.auth().signInWithEmailAndPassword(email, pass).catch(e=>{ err.textContent=traducirErrorAuth(e); });
+}
+function authRegister(){
+  const email=document.getElementById('authEmail').value.trim();
+  const pass=document.getElementById('authPassword').value;
+  const err=document.getElementById('authError'); err.textContent='';
+  if(!email || !pass){ err.textContent='Escribe tu correo y contraseña.'; return; }
+  firebase.auth().createUserWithEmailAndPassword(email, pass).catch(e=>{ err.textContent=traducirErrorAuth(e); });
+}
+function authLogout(){
+  if(!confirm('¿Cerrar sesión?')) return;
+  firebase.auth().signOut();
+}
+
 function todayStr(){return new Date().toISOString().slice(0,10);}
 function uid(){return Math.random().toString(36).slice(2,9);}
 
@@ -1434,7 +1497,20 @@ function render(){
 }
 render();
 setInterval(renderHeader, 30000);
-initCloud();
+
+firebase.initializeApp(firebaseConfig);
+firebase.auth().onAuthStateChanged(user=>{
+  if(user){
+    document.getElementById('authOverlay').style.display='none';
+    document.getElementById('appRoot').style.display='flex';
+    startCloudForUser(user.uid);
+  } else {
+    document.getElementById('authOverlay').style.display='flex';
+    document.getElementById('appRoot').style.display='none';
+    cloudReady=false;
+    setCloudStatus('');
+  }
+});
 </script>
 </body>
 </html>
